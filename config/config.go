@@ -11,6 +11,10 @@ type Config struct {
 	PaymeMerch  string
 	PaymeKey    string
 	TokenEncKey string
+	KaspiURL    string
+	KaspiAPIKey string
+	KaspiDevice string
+	KaspiOrgBIN string
 }
 
 // Load reads config from env with sane defaults for local dev.
@@ -23,6 +27,10 @@ func Load() Config {
 		PaymeMerch:  os.Getenv("PAYME_MERCHANT_ID"),
 		PaymeKey:    os.Getenv("PAYME_SUBSCRIBE_KEY"),
 		TokenEncKey: os.Getenv("PAYME_TOKEN_ENC_KEY"),
+		KaspiURL:    os.Getenv("KASPI_BASE_URL"),
+		KaspiAPIKey: os.Getenv("KASPI_API_KEY"),
+		KaspiDevice: os.Getenv("KASPI_DEVICE_TOKEN"),
+		KaspiOrgBIN: os.Getenv("KASPI_ORG_BIN"),
 	}
 }
 

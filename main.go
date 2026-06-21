@@ -12,6 +12,7 @@ import (
 	"billing/jobs"
 	"billing/middleware"
 	"billing/payments"
+	"billing/payments/kaspi"
 	"billing/payments/payme"
 	"billing/subscriptions"
 	"billing/webhooks"
@@ -62,6 +63,15 @@ func main() {
 		payments.GetCardRoutes(v1, payments.NewCardController(pool, cardBinder, methods))
 	}
 
+	// Kaspi QR (poll-based) — active when configured.
+	var kaspiPoller *kaspi.Poller
+	if cfg.KaspiURL != "" {
+		kc := kaspi.NewClient(cfg.KaspiURL, cfg.KaspiAPIKey, cfg.KaspiDevice, cfg.KaspiOrgBIN, nil)
+		krepo := kaspi.NewRepo()
+		kaspiPoller = kaspi.NewPoller(kc, krepo, paySvc)
+		kaspi.GetRoutes(v1, kaspi.NewController(pool, kc, krepo))
+	}
+
 	// admin API (same api-key guard for SP1; tighten later)
 	admin := v1.Group("/admin")
 	payments.GetAdminRoutes(admin, payments.NewController(pool))
@@ -69,7 +79,7 @@ func main() {
 	// background workers
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runWorkers(ctx, pool, cfg.GraceDays, paySvc)
+	go runWorkers(ctx, pool, cfg.GraceDays, paySvc, kaspiPoller)
 
 	log.Infof("billing listening on %s", cfg.HTTPAddr)
 	if err := r.Run(cfg.HTTPAddr); err != nil {
@@ -78,7 +88,7 @@ func main() {
 }
 
 // runWorkers ticks the lifecycle + dispatcher jobs every 30s.
-func runWorkers(ctx context.Context, pool *pgxpool.Pool, graceDays int, charger jobs.Charger) {
+func runWorkers(ctx context.Context, pool *pgxpool.Pool, graceDays int, charger jobs.Charger, kaspiPoller *kaspi.Poller) {
 	runner := jobs.NewRunner(graceDays, charger)
 	disp := webhooks.NewDispatcher(nil)
 	tick := time.NewTicker(30 * time.Second)
@@ -88,13 +98,13 @@ func runWorkers(ctx context.Context, pool *pgxpool.Pool, graceDays int, charger 
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			runJob(ctx, pool, runner, disp)
+			runJob(ctx, pool, runner, disp, kaspiPoller)
 		}
 	}
 }
 
 // runJob opens one tx per tick and runs all workers within it.
-func runJob(ctx context.Context, pool *pgxpool.Pool, runner *jobs.Runner, disp *webhooks.Dispatcher) {
+func runJob(ctx context.Context, pool *pgxpool.Pool, runner *jobs.Runner, disp *webhooks.Dispatcher, kaspiPoller *kaspi.Poller) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		log.Errorf("worker begin: %v", err)
@@ -116,6 +126,12 @@ func runJob(ctx context.Context, pool *pgxpool.Pool, runner *jobs.Runner, disp *
 	if err := runner.DunningCharge(ctx, tx); err != nil {
 		log.Errorf("dunning: %v", err)
 		return
+	}
+	if kaspiPoller != nil {
+		if err := kaspiPoller.Poll(ctx, tx); err != nil {
+			log.Errorf("kaspi poll: %v", err)
+			return
+		}
 	}
 	if _, err := disp.DeliverBatch(ctx, tx, 50); err != nil {
 		log.Errorf("dispatch: %v", err)
