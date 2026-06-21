@@ -24,7 +24,7 @@ type Controller struct {
 }
 
 func NewController(p pool) *Controller {
-	return &Controller{pool: p, svc: NewService(NewManual())}
+	return &Controller{pool: p, svc: NewService(NewManual(), nil)}
 }
 
 // MarkPaid POST /v1/admin/invoices/:id/mark-paid

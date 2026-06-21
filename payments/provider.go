@@ -8,6 +8,7 @@ type ChargeRequest struct {
 	Currency  string
 	Amount    int64
 	Ref       string
+	Token     string // saved provider card token (recurrent); empty for manual
 }
 
 // ChargeResult is the provider's response.
