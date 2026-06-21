@@ -147,3 +147,17 @@ func (s *Service) ChargeInvoice(ctx context.Context, tx base.PGXDB, productID, i
 	}
 	return s.settleInvoice(ctx, tx, productID, iv, s.provider.Name(), res.ProviderRef, res.Raw)
 }
+
+// SettleExternal settles an invoice paid out-of-band (confirmed by an
+// external/QR provider such as Kaspi). Looks up the invoice and runs the shared
+// settle logic (idempotent: a paid invoice is a no-op).
+func (s *Service) SettleExternal(ctx context.Context, tx base.PGXDB, productID, invoiceID int64, providerName, providerRef string, raw map[string]any) error {
+	iv, ok, err := s.repo.GetInvoice(ctx, tx, invoiceID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("invoice not found")
+	}
+	return s.settleInvoice(ctx, tx, productID, iv, providerName, providerRef, raw)
+}

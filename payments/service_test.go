@@ -103,3 +103,30 @@ func TestChargeInvoiceWithTokenSettles(t *testing.T) {
 		t.Fatalf("status = %s, want active", s.Status)
 	}
 }
+
+func TestSettleExternalActivates(t *testing.T) {
+	ctx, tx := testdb.TxOrSkip(t)
+	cr := catalog.NewRepo()
+	pid, _ := cr.CreateProduct(ctx, tx, "cm", "CM", "k")
+	planID, _ := cr.CreatePlan(ctx, tx, pid, "pro", "Pro", map[string]any{}, 14)
+	_ = cr.AddPrice(ctx, tx, planID, "KZT", "month", 5000)
+	cust, _ := customers.NewRepo().Register(ctx, tx, pid, "shopA", "u1", "Shop A", "KZT")
+	sub, _ := subscriptions.NewService().Create(ctx, tx, pid, subscriptions.CreateInput{
+		CustomerID: cust.ID, PlanCode: "pro", Currency: "KZT", Interval: "month", Trial: true,
+	})
+	_, _ = tx.Exec(ctx, `UPDATE subscription SET status='past_due' WHERE id=$1`, sub.ID)
+	var invID int64
+	now := time.Now()
+	_ = tx.QueryRow(ctx,
+		`INSERT INTO invoice (subscription_id, customer_id, currency, amount, status, period_start, period_end, due_date)
+		 VALUES ($1,$2,'KZT',5000,'open',$3,$4,$4) RETURNING id`,
+		sub.ID, cust.ID, now, now.AddDate(0, 1, 0)).Scan(&invID)
+
+	svc := NewService(NewManual(), nil)
+	if err := svc.SettleExternal(ctx, tx, pid, invID, "kaspi", "qr-1", map[string]any{"src": "kaspi"}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _, _ := subscriptions.NewRepo().Get(ctx, tx, sub.ID); s.Status != subscriptions.Active {
+		t.Fatalf("status = %s, want active", s.Status)
+	}
+}
