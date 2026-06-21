@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS webhook_endpoint;
+DROP TABLE IF EXISTS plan_price;
+DROP TABLE IF EXISTS plan;
+DROP TABLE IF EXISTS product;
