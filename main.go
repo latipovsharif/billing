@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"time"
 
+	"billing/base"
 	"billing/catalog"
 	"billing/config"
 	"billing/customers"
 	"billing/jobs"
 	"billing/middleware"
 	"billing/payments"
+	"billing/payments/payme"
 	"billing/subscriptions"
 	"billing/webhooks"
 
@@ -31,6 +33,22 @@ func main() {
 	}
 	defer pool.Close()
 
+	// Payment provider selection: Payme (recurrent) when configured, else manual.
+	var provider payments.Provider = payments.NewManual()
+	var methods *payments.PaymentMethodRepo
+	var cardBinder payments.CardBinder
+	if cfg.PaymeURL != "" {
+		cipher, err := base.NewCipher(cfg.TokenEncKey)
+		if err != nil {
+			log.Fatalf("PAYME_TOKEN_ENC_KEY: %v", err)
+		}
+		methods = payments.NewPaymentMethodRepo(cipher)
+		pc := payme.NewClient(cfg.PaymeURL, cfg.PaymeMerch, cfg.PaymeKey, nil)
+		provider = payme.NewProvider(pc)
+		cardBinder = pc
+	}
+	paySvc := payments.NewService(provider, methods)
+
 	r := gin.Default()
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
 
@@ -40,6 +58,9 @@ func main() {
 	catalog.GetRoutes(v1, catalog.NewController(catalog.NewService(pool)))
 	customers.GetRoutes(v1, customers.NewController(pool))
 	subscriptions.GetRoutes(v1, subscriptions.NewController(pool))
+	if cardBinder != nil {
+		payments.GetCardRoutes(v1, payments.NewCardController(pool, cardBinder, methods))
+	}
 
 	// admin API (same api-key guard for SP1; tighten later)
 	admin := v1.Group("/admin")
@@ -48,7 +69,7 @@ func main() {
 	// background workers
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runWorkers(ctx, pool, cfg.GraceDays)
+	go runWorkers(ctx, pool, cfg.GraceDays, paySvc)
 
 	log.Infof("billing listening on %s", cfg.HTTPAddr)
 	if err := r.Run(cfg.HTTPAddr); err != nil {
@@ -57,8 +78,8 @@ func main() {
 }
 
 // runWorkers ticks the lifecycle + dispatcher jobs every 30s.
-func runWorkers(ctx context.Context, pool *pgxpool.Pool, graceDays int) {
-	runner := jobs.NewRunner(graceDays)
+func runWorkers(ctx context.Context, pool *pgxpool.Pool, graceDays int, charger jobs.Charger) {
+	runner := jobs.NewRunner(graceDays, charger)
 	disp := webhooks.NewDispatcher(nil)
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
@@ -90,6 +111,10 @@ func runJob(ctx context.Context, pool *pgxpool.Pool, runner *jobs.Runner, disp *
 	}
 	if err := runner.RenewalDue(ctx, tx); err != nil {
 		log.Errorf("renewal: %v", err)
+		return
+	}
+	if err := runner.DunningCharge(ctx, tx); err != nil {
+		log.Errorf("dunning: %v", err)
 		return
 	}
 	if _, err := disp.DeliverBatch(ctx, tx, 50); err != nil {

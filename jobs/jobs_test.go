@@ -23,7 +23,7 @@ func TestTrialExpiryMovesToPastDue(t *testing.T) {
 	})
 	_, _ = tx.Exec(ctx, `UPDATE subscription SET trial_end=$2 WHERE id=$1`, sub.ID, time.Now().Add(-time.Hour))
 
-	r := NewRunner(3)
+	r := NewRunner(3, nil)
 	if err := r.TrialExpiry(ctx, tx); err != nil {
 		t.Fatal(err)
 	}

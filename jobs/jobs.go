@@ -9,17 +9,27 @@ import (
 	"billing/base"
 	"billing/subscriptions"
 	"billing/webhooks"
+
+	log "github.com/sirupsen/logrus"
 )
+
+// Charger settles an invoice using the customer's saved card. Implemented by
+// *payments.Service.ChargeInvoice. nil disables auto-charge (manual-only).
+type Charger interface {
+	ChargeInvoice(ctx context.Context, db base.PGXDB, productID, invoiceID int64) error
+}
 
 // Runner holds job configuration.
 type Runner struct {
 	graceDays int
 	subs      *subscriptions.Repo
 	outbox    *webhooks.Outbox
+	charger   Charger
 }
 
-func NewRunner(graceDays int) *Runner {
-	return &Runner{graceDays: graceDays, subs: subscriptions.NewRepo(), outbox: webhooks.NewOutbox()}
+// NewRunner builds the job runner. charger may be nil (no auto-charge).
+func NewRunner(graceDays int, charger Charger) *Runner {
+	return &Runner{graceDays: graceDays, subs: subscriptions.NewRepo(), outbox: webhooks.NewOutbox(), charger: charger}
 }
 
 type claim struct {
@@ -113,6 +123,50 @@ func (r *Runner) RenewalDue(ctx context.Context, db base.PGXDB) error {
 			 ON CONFLICT (subscription_id, period_start) DO NOTHING`, c.id)
 		if err := r.advance(ctx, db, c, subscriptions.EvPeriodEnd, "period_end", "subscription.past_due"); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// ensureOpenInvoice returns the id of the subscription's current open invoice,
+// creating one (amount/currency from the subscription) if none exists. Idempotent.
+func (r *Runner) ensureOpenInvoice(ctx context.Context, db base.PGXDB, subID int64) (int64, error) {
+	_, err := db.Exec(ctx,
+		`INSERT INTO invoice (subscription_id, customer_id, currency, amount, status, period_start, period_end, due_date)
+		 SELECT s.id, s.customer_id, s.currency, s.amount, 'open', now(), now()+interval '1 month', now()
+		 FROM subscription s WHERE s.id=$1
+		   AND NOT EXISTS (SELECT 1 FROM invoice WHERE subscription_id=s.id AND status='open')`, subID)
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	err = db.QueryRow(ctx,
+		`SELECT id FROM invoice WHERE subscription_id=$1 AND status='open' ORDER BY id DESC LIMIT 1`, subID).Scan(&id)
+	return id, err
+}
+
+// DunningCharge auto-charges past_due subscriptions that have a verified default
+// card. Covers trial conversion, renewal, and in-grace retries uniformly: a
+// successful charge settles the invoice and the state-machine moves past_due ->
+// active. Charge failures are left as-is (GraceExpiry eventually suspends).
+func (r *Runner) DunningCharge(ctx context.Context, db base.PGXDB) error {
+	if r.charger == nil {
+		return nil
+	}
+	cs, err := r.claimSubs(ctx, db,
+		`s.status='past_due' AND EXISTS (
+		   SELECT 1 FROM payment_method m
+		   WHERE m.customer_id=s.customer_id AND m.verified AND m.is_default)`)
+	if err != nil {
+		return err
+	}
+	for _, c := range cs {
+		invID, err := r.ensureOpenInvoice(ctx, db, c.id)
+		if err != nil {
+			return err
+		}
+		if err := r.charger.ChargeInvoice(ctx, db, c.productID, invID); err != nil {
+			log.Warnf("dunning charge sub %d: %v", c.id, err) // leave past_due; retry next tick
 		}
 	}
 	return nil

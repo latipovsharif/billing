@@ -30,7 +30,7 @@ func TestTrialToPaidLifecycle(t *testing.T) {
 
 	// expire trial
 	_, _ = tx.Exec(ctx, `UPDATE subscription SET trial_end=$2 WHERE id=$1`, sub.ID, time.Now().Add(-time.Hour))
-	if err := jobs.NewRunner(3).TrialExpiry(ctx, tx); err != nil {
+	if err := jobs.NewRunner(3, nil).TrialExpiry(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
 	if s, _, _ := subscriptions.NewRepo().Get(ctx, tx, sub.ID); s.Status != subscriptions.PastDue {
@@ -44,7 +44,7 @@ func TestTrialToPaidLifecycle(t *testing.T) {
 		`INSERT INTO invoice (subscription_id, customer_id, currency, amount, status, period_start, period_end, due_date)
 		 VALUES ($1,$2,'UZS',5000,'open',$3,$4,$4) RETURNING id`,
 		sub.ID, cust.ID, now, now.AddDate(0, 1, 0)).Scan(&invID)
-	if err := payments.NewService(payments.NewManual()).MarkPaid(ctx, tx, pid, invID, "operator"); err != nil {
+	if err := payments.NewService(payments.NewManual(), nil).MarkPaid(ctx, tx, pid, invID, "operator"); err != nil {
 		t.Fatal(err)
 	}
 	if s, _, _ := subscriptions.NewRepo().Get(ctx, tx, sub.ID); s.Status != subscriptions.Active {
