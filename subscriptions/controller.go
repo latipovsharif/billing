@@ -42,6 +42,10 @@ func (ct *Controller) Create(c *gin.Context) {
 		return
 	}
 	pid := middleware.ProductID(c)
+	middleware.LogField(c, "customer_id", req.CustomerID)
+	middleware.LogField(c, "plan_code", req.PlanCode)
+	middleware.LogField(c, "currency", req.Currency)
+	middleware.LogField(c, "trial", req.Trial)
 	var sub Subscription
 	err := base.WithTx(c.Request.Context(), ct.pool, func(tx pgx.Tx) error {
 		var e error
@@ -55,6 +59,8 @@ func (ct *Controller) Create(c *gin.Context) {
 		response.Err(c, http.StatusBadRequest, "create_failed", err.Error())
 		return
 	}
+	middleware.LogField(c, "subscription_id", sub.ID)
+	middleware.LogField(c, "sub_status", sub.Status)
 	response.OK(c, http.StatusCreated, sub)
 }
 

@@ -40,6 +40,58 @@ func (r *Repo) AddPrice(ctx context.Context, db base.PGXDB, planID int64, curren
 	return err
 }
 
+// UpsertPlan creates or updates a plan by (product_id, code), returning its id.
+// Idempotent so operator provisioning can be re-run safely.
+func (r *Repo) UpsertPlan(ctx context.Context, db base.PGXDB, productID int64, code, name string, limits map[string]any, trialDays int) (int64, error) {
+	if limits == nil {
+		limits = map[string]any{}
+	}
+	raw, err := json.Marshal(limits)
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	err = db.QueryRow(ctx,
+		`INSERT INTO plan (product_id, code, name, limits, trial_days)
+		 VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (product_id, code)
+		 DO UPDATE SET name=EXCLUDED.name, limits=EXCLUDED.limits, trial_days=EXCLUDED.trial_days, active=TRUE
+		 RETURNING id`,
+		productID, code, name, raw, trialDays).Scan(&id)
+	return id, err
+}
+
+// UpsertPrice creates or updates a plan's (currency, interval) price line,
+// returning its id. Idempotent on (plan_id, currency, interval).
+func (r *Repo) UpsertPrice(ctx context.Context, db base.PGXDB, planID int64, currency, interval string, amount int64) (int64, error) {
+	var id int64
+	err := db.QueryRow(ctx,
+		`INSERT INTO plan_price (plan_id, currency, interval, amount)
+		 VALUES ($1,$2,$3,$4)
+		 ON CONFLICT (plan_id, currency, interval)
+		 DO UPDATE SET amount=EXCLUDED.amount
+		 RETURNING id`,
+		planID, currency, interval, amount).Scan(&id)
+	return id, err
+}
+
+// PlanByID loads a plan scoped to its product (ownership check), or false.
+func (r *Repo) PlanByID(ctx context.Context, db base.PGXDB, productID, planID int64) (Plan, bool, error) {
+	var p Plan
+	var raw []byte
+	err := db.QueryRow(ctx,
+		`SELECT id, product_id, code, name, limits, trial_days, active
+		 FROM plan WHERE id=$1 AND product_id=$2`, planID, productID).
+		Scan(&p.ID, &p.ProductID, &p.Code, &p.Name, &raw, &p.TrialDays, &p.Active)
+	if base.IsNotFound(err) {
+		return Plan{}, false, nil
+	}
+	if err == nil {
+		_ = json.Unmarshal(raw, &p.Limits)
+	}
+	return p, err == nil, err
+}
+
 func (r *Repo) ListPlansWithPrices(ctx context.Context, db base.PGXDB, productID int64) ([]PlanWithPrices, error) {
 	rows, err := db.Query(ctx,
 		`SELECT id, product_id, code, name, limits, trial_days, active

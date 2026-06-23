@@ -31,12 +31,15 @@ func (ct *Controller) Register(c *gin.Context) {
 		response.Err(c, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	middleware.LogField(c, "external_ref", req.ExternalRef)
+	middleware.LogField(c, "currency", req.DefaultCurrency)
 	cust, err := ct.repo.Register(c.Request.Context(), ct.pool,
 		middleware.ProductID(c), req.ExternalRef, req.OwnerUserID, req.DisplayName, req.DefaultCurrency)
 	if err != nil {
 		response.Err(c, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	middleware.LogField(c, "customer_id", cust.ID)
 	response.OK(c, http.StatusOK, cust)
 }
 
